@@ -100,10 +100,10 @@
       currentUser: getStored('currentUser', null), // Persistent login state
       activeTab: 'feed', // 'feed' | 'chat' | 'profile' | 'dm'
       activeStoryModal: null, // story object or null
-      showCreateModal: false, // create post/video modal state
+      showCreatePostModal: false, // create post/video modal state
       activeReel: null, // full-screen video reel object
       activeDMUser: null, // target user object for 1-on-1 DM
-      showNotifications: false,
+      showNotificationsModal: false, // Full screen notifications modal for mobile clarity
 
       // Notifications stored in localStorage
       notifications: getStored('notifications', [
@@ -140,7 +140,7 @@
         { id: 1, sender: "Shreyansh", role: "Admin", text: "Welcome to the Vintage squad room!", timestamp: "12:00 PM", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Shreyansh" }
       ]),
 
-      // Dynamic Group Members (No dummy users)
+      // Dynamic Group Members
       members: getStored('members', [
         { id: 'm_admin', name: 'Shreyansh', role: 'Admin', status: 'Active', joined: 'Owner', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Shreyansh' }
       ]),
@@ -159,6 +159,8 @@
       setStored('members', state.members);
       setStored('blockedList', state.blockedList);
       setStored('logs', state.logs);
+      setStored('notifications', state.notifications);
+      setStored('directMessages', state.directMessages);
     }
 
     // --- AUTHENTICATION & LOGIN LOGIC ---
@@ -196,14 +198,15 @@
         return;
       }
 
-      const finalRole = assignedRole; // Assign exact role derived from passcode entered
-      const userAvatar = `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(nameInput)}`;
+      const finalRole = assignedRole;
+      const userAvatar = existingMember ? existingMember.avatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(nameInput)}`;
 
       state.currentUser = {
         id: existingMember ? existingMember.id : 'u_' + Date.now(),
         name: nameInput,
         role: finalRole,
         avatar: userAvatar,
+        bio: existingMember ? (existingMember.bio || "Vintage Member") : "Vintage Member",
         joined: 'Today'
       };
 
@@ -214,10 +217,10 @@
           role: finalRole,
           status: 'Active',
           joined: 'Today',
-          avatar: userAvatar
+          avatar: userAvatar,
+          bio: state.currentUser.bio
         });
       } else {
-        // Update role dynamically based on used passcode
         existingMember.role = finalRole;
       }
 
@@ -250,7 +253,6 @@
       const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       state.logs.unshift({ id: Date.now(), text: msg, time: time });
       
-      // Auto push notification
       state.notifications.unshift({
         id: Date.now(),
         text: msg,
@@ -262,8 +264,8 @@
     }
 
     function toggleNotifications() {
-      state.showNotifications = !state.showNotifications;
-      if (!state.showNotifications) {
+      state.showNotificationsModal = !state.showNotificationsModal;
+      if (state.showNotificationsModal) {
         state.notifications.forEach(n => n.read = true);
       }
       saveState();
@@ -280,6 +282,19 @@
 
     function closeReel() {
       state.activeReel = null;
+      renderApp();
+    }
+
+    function openStory(storyId) {
+      const story = state.stories.find(s => s.id === storyId);
+      if (story) {
+        state.activeStoryModal = story;
+        renderApp();
+      }
+    }
+
+    function closeStory() {
+      state.activeStoryModal = null;
       renderApp();
     }
 
@@ -316,40 +331,86 @@
       }, 50);
     }
 
+    // --- CHANGE PROFILE PICTURE (NEW FEATURE) ---
+    function triggerAvatarUpload() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const newAvatarData = event.target.result;
+            
+            // 1. Update current logged-in user avatar
+            state.currentUser.avatar = newAvatarData;
+            
+            // 2. Update member object
+            const member = state.members.find(m => m.name.toLowerCase() === state.currentUser.name.toLowerCase());
+            if (member) member.avatar = newAvatarData;
+
+            // 3. Sync past posts & comments avatar
+            state.posts.forEach(p => {
+              if (p.author.toLowerCase() === state.currentUser.name.toLowerCase()) {
+                p.avatar = newAvatarData;
+              }
+            });
+
+            // 4. Sync stories avatar
+            state.stories.forEach(s => {
+              if (s.author.toLowerCase() === state.currentUser.name.toLowerCase()) {
+                s.avatar = newAvatarData;
+              }
+            });
+
+            // 5. Sync chat messages avatar
+            state.messages.forEach(m => {
+              if (m.sender.toLowerCase() === state.currentUser.name.toLowerCase()) {
+                m.avatar = newAvatarData;
+              }
+            });
+
+            saveState();
+            addLog(`Profile photo updated by ${state.currentUser.name}`);
+            renderApp();
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+      input.click();
+    }
+
     function saveProfileEdit(e) {
       e.preventDefault();
       const newBio = document.getElementById('profile-bio-input').value.trim();
+      const avatarFile = document.getElementById('profile-avatar-file').files[0];
+
       if (state.currentUser) {
         state.currentUser.bio = newBio || "Vintage Member";
-        const member = state.members.find(m => m.name.toLowerCase() === state.currentUser.name.toLowerCase());
-        if (member) member.bio = state.currentUser.bio;
-        saveState();
-        addLog(`Profile updated by ${state.currentUser.name}`);
-        alert("Profile updated successfully!");
-        renderApp();
+        
+        if (avatarFile) {
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            state.currentUser.avatar = ev.target.result;
+            updateMemberProfileData();
+          };
+          reader.readAsDataURL(avatarFile);
+        } else {
+          updateMemberProfileData();
+        }
       }
     }
 
-    function sendVoiceNoteSimulated() {
-      const audioTexts = ["🎙️ Voice note (0:05)", "🎙️ Audio message (0:12)", "🎙️ Voice clip (0:08)"];
-      const randomAudio = audioTexts[Math.floor(Math.random() * audioTexts.length)];
-      
-      const newMsg = {
-        id: Date.now(),
-        sender: state.currentUser.name,
-        role: state.currentUser.role,
-        text: randomAudio,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        avatar: state.currentUser.avatar
-      };
-
-      state.messages.push(newMsg);
+    function updateMemberProfileData() {
+      const member = state.members.find(m => m.name.toLowerCase() === state.currentUser.name.toLowerCase());
+      if (member) {
+        member.bio = state.currentUser.bio;
+        member.avatar = state.currentUser.avatar;
+      }
       saveState();
-      renderApp();
-    }
-
-    function closeStory() {
-      state.activeStoryModal = null;
+      addLog(`Profile updated by ${state.currentUser.name}`);
+      alert("Profile updated successfully!");
       renderApp();
     }
 
@@ -362,7 +423,7 @@
         if (file) {
           const reader = new FileReader();
           reader.onload = (event) => {
-            const cap = prompt("Story ka caption likhein (Optional):");
+            const cap = prompt("Story caption (Optional):");
             const newStory = {
               id: Date.now(),
               author: state.currentUser.name,
@@ -381,14 +442,8 @@
       input.click();
     }
 
-    // --- CREATE POST / VIDEO MODAL LOGIC ---
-    function openCreateModal() {
-      state.showCreateModal = true;
-      renderApp();
-    }
-
-    function closeCreateModal() {
-      state.showCreateModal = false;
+    function toggleCreatePostModal(show) {
+      state.showCreatePostModal = show;
       renderApp();
     }
 
@@ -406,7 +461,7 @@
           if (file) {
             const reader = new FileReader();
             reader.onload = (ev) => {
-              const cap = prompt("Photo post ka description/caption likhein:");
+              const cap = prompt("Photo post description/caption:");
               saveNewPost(cap || "", ev.target.result, "image");
             };
             reader.readAsDataURL(file);
@@ -422,7 +477,7 @@
           if (file) {
             const reader = new FileReader();
             reader.onload = (ev) => {
-              const cap = prompt("Video / Reel ka description likhein:");
+              const cap = prompt("Video / Reel description:");
               saveNewPost(cap || "", ev.target.result, "video");
             };
             reader.readAsDataURL(file);
@@ -448,10 +503,32 @@
       };
 
       state.posts.unshift(newPost);
-      state.showCreateModal = false;
+      state.showCreatePostModal = false;
       saveState();
       addLog(`New ${postType} created by ${state.currentUser.name}`);
       renderApp();
+    }
+
+    function createPost(e) {
+      e.preventDefault();
+      const text = document.getElementById('modal-post-text').value.trim();
+      const fileInput = document.getElementById('modal-post-media-file');
+      const isVideo = document.getElementById('modal-post-is-video').checked;
+      const file = fileInput.files[0];
+
+      if (!text && !file) return;
+
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          saveNewPost(text, ev.target.result, isVideo ? 'video' : 'image');
+          toggleCreatePostModal(false);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        saveNewPost(text, null, 'text');
+        toggleCreatePostModal(false);
+      }
     }
 
     function toggleLike(postId) {
@@ -493,7 +570,6 @@
       }
     }
 
-    // --- CHAT LOGIC ---
     function sendChatMessage(e) {
       e.preventDefault();
       const input = document.getElementById('chat-input');
@@ -518,7 +594,6 @@
       }, 50);
     }
 
-    // --- ADMIN CONTROLS ---
     function toggleUserRole(memberId) {
       if (state.currentUser.role !== 'Admin') return;
       const member = state.members.find(m => m.id === memberId);
@@ -535,7 +610,6 @@
       if (!member) return;
       member.status = member.status === 'Active' ? 'Suspended' : 'Active';
       
-      // If currently logged-in user gets suspended, force logout immediately
       if (state.currentUser && state.currentUser.name.toLowerCase() === member.name.toLowerCase() && member.status === 'Suspended') {
         state.currentUser = null;
       }
@@ -552,14 +626,13 @@
       if (confirm(`Block ${member.name} completely from accessing Vintage?`)) {
         state.blockedList.push(member.name.toLowerCase());
         
-        // If currently logged-in user is blocked, kick them out immediately
         if (state.currentUser && state.currentUser.name.toLowerCase() === member.name.toLowerCase()) {
           state.currentUser = null;
         }
 
         state.members = state.members.filter(m => m.id !== memberId);
         saveState();
-        addLog(`User '${member.name}' was PERMANENTLY BLOCKED by Admin.`);
+        addLog(`User '${member.name}' WAS PERMANENTLY BLOCKED.`);
         renderApp();
       }
     }
@@ -570,6 +643,104 @@
       saveState();
       addLog(`User '${name}' unblocked.`);
       renderApp();
+    }
+
+    // --- RENDER LOGIN SCREEN (FIXED MISSING FUNCTION) ---
+    function renderLoginScreen() {
+      return `
+        <div class="min-h-screen w-full flex items-center justify-center p-4 bg-[#050806] relative overflow-hidden">
+          <!-- Background Glow Effect -->
+          <div class="absolute w-96 h-96 bg-emerald-glow/10 rounded-full blur-3xl -top-20 -left-20 pointer-events-none"></div>
+          <div class="absolute w-96 h-96 bg-emerald-glow/5 rounded-full blur-3xl -bottom-20 -right-20 pointer-events-none"></div>
+
+          <div class="w-full max-w-md bg-obsidian-card border border-emerald-glow/30 rounded-3xl p-6 sm:p-8 shadow-glow-md space-y-6 relative z-10">
+            <!-- App Logo & Title -->
+            <div class="text-center space-y-2">
+              <div class="w-14 h-14 mx-auto rounded-2xl bg-obsidian-deep border-2 border-emerald-glow flex items-center justify-center text-emerald-glow shadow-glow-sm">
+                <i class="fa-solid fa-gem text-2xl"></i>
+              </div>
+              <h1 class="text-2xl font-extrabold text-white tracking-wider">VINTAGE</h1>
+              <p class="text-xs text-emerald-glow font-mono">Exclusive Squad Network</p>
+            </div>
+
+            <!-- Error Banner -->
+            <div id="login-error" class="hidden p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-red-400 text-xs text-center font-mono"></div>
+
+            <!-- Login Form -->
+            <form onsubmit="handleLogin(event)" class="space-y-4">
+              <div>
+                <label class="block text-xs font-mono text-gray-400 mb-1">Your Name</label>
+                <div class="relative">
+                  <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 text-sm">
+                    <i class="fa-solid fa-user"></i>
+                  </span>
+                  <input type="text" id="login-name" required placeholder="Enter your name..."
+                    class="w-full bg-obsidian-deep border border-obsidian-border rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-xs font-mono text-gray-400 mb-1">Secret Passcode</label>
+                <div class="relative">
+                  <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 text-sm">
+                    <i class="fa-solid fa-key"></i>
+                  </span>
+                  <input type="password" id="login-pass" required placeholder="Enter secret passcode..."
+                    class="w-full bg-obsidian-deep border border-obsidian-border rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
+                </div>
+              </div>
+
+              <button type="submit" class="w-full py-3 bg-emerald-glow hover:bg-emerald-accent text-obsidian-deep font-extrabold text-sm rounded-xl shadow-glow-sm transition transform active:scale-98">
+                AUTHENTICATE & ENTER
+              </button>
+            </form>
+          </div>
+        </div>
+      `;
+    }
+
+    // --- RENDER SPOTLIGHTS / STORIES BAR ---
+    function renderSpotlightsBar() {
+      return `
+        <div class="px-3 py-2 flex items-center space-x-3 overflow-x-auto no-scrollbar border-t border-obsidian-border/50 bg-obsidian-deep/40">
+          <!-- Add Story Button -->
+          <div onclick="triggerStoryUpload()" class="flex flex-col items-center space-y-1 shrink-0 cursor-pointer group">
+            <div class="w-12 h-12 rounded-full border-2 border-dashed border-emerald-glow/60 flex items-center justify-center bg-obsidian group-hover:border-emerald-glow transition">
+              <i class="fa-solid fa-plus text-emerald-glow text-sm"></i>
+            </div>
+            <span class="text-[9px] font-mono text-gray-400">Add Story</span>
+          </div>
+
+          <!-- Existing Stories -->
+          ${state.stories.map(s => `
+            <div onclick="openStory(${s.id})" class="flex flex-col items-center space-y-1 shrink-0 cursor-pointer">
+              <div class="w-12 h-12 rounded-full p-0.5 border-2 border-emerald-glow shadow-glow-sm bg-obsidian overflow-hidden">
+                <img src="${s.image || s.avatar}" class="w-full h-full rounded-full object-cover">
+              </div>
+              <span class="text-[9px] font-mono text-white max-w-[50px] truncate">${s.author}</span>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function sendVoiceNoteSimulated() {
+      if (!state.currentUser) return;
+      const newMsg = {
+        id: Date.now(),
+        sender: state.currentUser.name,
+        role: state.currentUser.role,
+        text: "🎙️ Voice Note (0:08) - Simulated Audio Message",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        avatar: state.currentUser.avatar
+      };
+      state.messages.push(newMsg);
+      saveState();
+      renderApp();
+      setTimeout(() => {
+        const chatBox = document.getElementById('chat-container');
+        if (chatBox) chatBox.scrollTop = chatBox.scrollHeight;
+      }, 50);
     }
 
     // --- RENDER MAIN LAYOUT ---
@@ -598,50 +769,30 @@
         <div class="flex flex-col h-full bg-[#050806] relative">
           <!-- TOP BRAND HEADER & SPOTLIGHT STORIES BAR -->
           <header class="bg-obsidian border-b border-obsidian-border shrink-0 z-20">
-            <div class="px-4 py-3 flex items-center justify-between">
+            <div class="px-3 py-2.5 sm:px-4 sm:py-3 flex items-center justify-between">
               <div class="flex items-center space-x-2 cursor-pointer" onclick="switchTab('feed')">
-                <div class="w-8 h-8 rounded-xl bg-obsidian-deep border border-emerald-glow/40 flex items-center justify-center text-emerald-glow shadow-glow-sm">
-                  <i class="fa-solid fa-gem text-base"></i>
+                <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-obsidian-deep border border-emerald-glow/40 flex items-center justify-center text-emerald-glow shadow-glow-sm">
+                  <i class="fa-solid fa-gem text-xs sm:text-base"></i>
                 </div>
-                <h1 class="font-extrabold text-white text-lg tracking-wider">VINTAGE</h1>
+                <h1 class="font-extrabold text-white text-base sm:text-lg tracking-wider">VINTAGE</h1>
               </div>
 
               <!-- HEADER ACTIONS (NOTIFICATION BELL + LOGOUT) -->
-              <div class="flex items-center space-x-3">
+              <div class="flex items-center space-x-2 sm:space-x-3">
                 <!-- NOTIFICATION BELL ICON -->
-                <div class="relative">
-                  <button onclick="toggleNotifications()" class="p-1.5 text-gray-300 hover:text-emerald-glow transition relative">
-                    <i class="fa-solid fa-bell text-lg"></i>
-                    ${unreadCount > 0 ? `
-                      <span class="absolute -top-1 -right-1 w-4 h-4 bg-emerald-glow text-obsidian-deep text-[9px] font-bold rounded-full flex items-center justify-center shadow-glow-sm">
-                        ${unreadCount}
-                      </span>
-                    ` : ''}
-                  </button>
-
-                  <!-- NOTIFICATION DROPDOWN POPUP -->
-                  ${state.showNotifications ? `
-                    <div class="absolute right-0 mt-2 w-72 sm:w-80 bg-obsidian-card border border-emerald-glow/40 rounded-2xl shadow-glow-lg p-3 z-50 space-y-2">
-                      <div class="flex items-center justify-between border-b border-obsidian-border pb-2">
-                        <span class="text-xs font-bold text-white font-mono">Notifications</span>
-                        <span class="text-[9px] text-emerald-glow">${state.notifications.length} alerts</span>
-                      </div>
-                      <div class="max-h-56 overflow-y-auto space-y-2 no-scrollbar">
-                        ${state.notifications.length > 0 ? state.notifications.map(n => `
-                          <div class="p-2 rounded-xl bg-obsidian-deep border border-obsidian-border text-[11px] space-y-0.5">
-                            <p class="text-gray-200">${n.text}</p>
-                            <span class="text-[9px] text-gray-500 font-mono">${n.time}</span>
-                          </div>
-                        `).join('') : '<p class="text-xs text-gray-500 text-center py-2">No notifications yet</p>'}
-                      </div>
-                    </div>
+                <button onclick="toggleNotifications()" class="p-2 text-gray-300 hover:text-emerald-glow transition relative active:scale-95">
+                  <i class="fa-solid fa-bell text-lg"></i>
+                  ${unreadCount > 0 ? `
+                    <span class="absolute top-1 right-1 w-4 h-4 bg-emerald-glow text-obsidian-deep text-[9px] font-bold rounded-full flex items-center justify-center shadow-glow-sm">
+                      ${unreadCount}
+                    </span>
                   ` : ''}
-                </div>
+                </button>
 
-                <span class="text-[10px] font-mono px-2.5 py-1 rounded-full ${state.currentUser.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow border border-emerald-glow/40 font-bold' : 'bg-gray-800 text-gray-400'}">
+                <span class="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full ${state.currentUser.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow border border-emerald-glow/40 font-bold' : 'bg-gray-800 text-gray-400'}">
                   ${state.currentUser.role}
                 </span>
-                <button onclick="handleLogout()" class="p-1.5 text-gray-400 hover:text-red-400 transition text-sm" title="Logout">
+                <button onclick="handleLogout()" class="p-2 text-gray-400 hover:text-red-400 transition text-sm" title="Logout">
                   <i class="fa-solid fa-right-from-bracket"></i>
                 </button>
               </div>
@@ -652,12 +803,15 @@
           </header>
 
           <!-- MAIN TAB CONTENT CONTAINER -->
-          <main class="flex-1 overflow-y-auto p-4 md:p-6 pb-24 relative">
+          <main class="flex-1 overflow-y-auto p-3 sm:p-5 pb-24 relative max-w-3xl mx-auto w-full">
             ${renderActiveTabContent()}
           </main>
 
           <!-- BOTTOM ACTION NAVIGATION BAR -->
           ${renderBottomTabBar()}
+
+          <!-- FULL SCREEN NOTIFICATION SECTION MODAL -->
+          ${state.showNotificationsModal ? renderFullNotificationModal() : ''}
 
           <!-- STORY MODAL IF ACTIVE -->
           ${state.activeStoryModal ? renderStoryModal() : ''}
@@ -671,96 +825,45 @@
       `;
     }
 
-    // --- INSTAGRAM-STYLE SPOTLIGHT STORIES BAR ---
-    function renderSpotlightsBar() {
+    // --- FULL NOTIFICATION SECTION MODAL FOR MOBILE ---
+    function renderFullNotificationModal() {
       return `
-        <div class="px-4 py-2 border-t border-obsidian-border/50 bg-obsidian-deep/50 overflow-x-auto no-scrollbar flex items-center space-x-4">
-          <!-- Add Story Button -->
-          <button onclick="triggerStoryUpload()" class="flex flex-col items-center space-y-1 shrink-0 group">
-            <div class="w-12 h-12 rounded-full border-2 border-dashed border-emerald-glow/60 flex items-center justify-center text-emerald-glow bg-obsidian-card group-hover:scale-105 transition shadow-glow-sm">
-              <i class="fa-solid fa-camera text-sm"></i>
+        <div class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col p-4 max-w-lg mx-auto">
+          <!-- Modal Header -->
+          <div class="flex items-center justify-between border-b border-obsidian-border pb-3 mb-4">
+            <div class="flex items-center space-x-2 text-emerald-glow">
+              <i class="fa-solid fa-bell text-lg"></i>
+              <h2 class="text-base font-bold text-white font-mono uppercase tracking-wider">Notifications & Alerts</h2>
             </div>
-            <span class="text-[10px] text-emerald-glow font-mono font-medium">Add Story</span>
-          </button>
-
-          <!-- Stories Feed -->
-          ${state.stories.map(story => `
-            <button onclick="openStory(${story.id})" class="flex flex-col items-center space-y-1 shrink-0 group">
-              <div class="w-12 h-12 rounded-full p-0.5 border-2 border-emerald-glow bg-obsidian-deep group-hover:scale-105 transition shadow-glow-sm">
-                <img src="${story.avatar}" class="w-full h-full rounded-full object-cover">
-              </div>
-              <span class="text-[10px] text-gray-300 font-mono truncate max-w-[60px]">${story.author}</span>
+            <button onclick="toggleNotifications()" class="w-8 h-8 rounded-full bg-obsidian border border-obsidian-border text-gray-300 flex items-center justify-center text-base hover:text-white">
+              &times;
             </button>
-          `).join('')}
-        </div>
-      `;
-    }
+          </div>
 
-    // --- LOGIN SCREEN TEMPLATE ---
-    function renderLoginScreen() {
-      return `
-        <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-[#050806] via-[#0B0F0E] to-[#02281b] relative overflow-hidden">
-          <div class="absolute -top-32 -left-32 w-96 h-96 bg-emerald-muted/20 rounded-full blur-3xl pointer-events-none"></div>
-          <div class="absolute -bottom-32 -right-32 w-96 h-96 bg-emerald-glow/10 rounded-full blur-3xl pointer-events-none"></div>
-
-          <div class="w-full max-w-md bg-obsidian-card/90 border border-obsidian-border rounded-2xl p-8 shadow-2xl relative z-10 emerald-glow-border backdrop-blur-xl">
-            <div class="text-center mb-8">
-              <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-obsidian-deep border border-emerald-glow/40 text-emerald-glow mb-3 shadow-glow-md">
-                <i class="fa-solid fa-shield-halved text-3xl"></i>
+          <!-- Notification List -->
+          <div class="flex-1 overflow-y-auto space-y-3 no-scrollbar pr-1">
+            ${state.notifications.length > 0 ? state.notifications.map(n => `
+              <div class="p-3.5 rounded-2xl bg-obsidian-card border border-emerald-glow/20 space-y-1 shadow-md">
+                <p class="text-xs text-gray-100 font-medium leading-relaxed">${n.text}</p>
+                <span class="text-[10px] text-emerald-glow font-mono block text-right">${n.time}</span>
               </div>
-              <h1 class="text-3xl font-extrabold tracking-wider text-white">VINTAGE</h1>
-              <p class="text-emerald-glow text-xs uppercase tracking-widest mt-1 font-mono">Exclusive Group Network</p>
-            </div>
-
-            <form onsubmit="handleLogin(event)" class="space-y-5">
-              <div>
-                <label class="block text-xs font-mono text-gray-400 uppercase tracking-wider mb-2">Your Name</label>
-                <div class="relative">
-                  <span class="absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-500">
-                    <i class="fa-solid fa-user text-sm"></i>
-                  </span>
-                  <input type="text" id="login-name" required placeholder="Enter your name" autocomplete="off"
-                    class="w-full pl-10 pr-4 py-3 bg-obsidian-deep/80 border border-obsidian-border rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow focus:ring-1 focus:ring-emerald-glow transition">
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-xs font-mono text-gray-400 uppercase tracking-wider mb-2">Secret Passcode</label>
-                <div class="relative">
-                  <span class="absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-500">
-                    <i class="fa-solid fa-key text-sm"></i>
-                  </span>
-                  <input type="password" id="login-pass" required placeholder="Enter passcode" autocomplete="off"
-                    class="w-full pl-10 pr-4 py-3 bg-obsidian-deep/80 border border-obsidian-border rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow focus:ring-1 focus:ring-emerald-glow transition">
-                </div>
-              </div>
-
-              <div id="login-error" class="hidden p-3 rounded-lg bg-red-950/60 border border-red-800/60 text-red-300 text-xs text-center font-medium"></div>
-
-              <button type="submit" class="w-full py-3.5 px-4 bg-emerald-glow text-obsidian-deep font-bold rounded-xl shadow-glow-md hover:bg-emerald-accent hover:shadow-glow-lg transition transform active:scale-[0.99] flex items-center justify-center space-x-2">
-                <span>ENTER VINTAGE</span>
-                <i class="fa-solid fa-arrow-right text-sm"></i>
-              </button>
-            </form>
+            `).join('') : '<div class="text-center py-12 text-gray-500 font-mono text-xs">No notifications to display</div>'}
           </div>
         </div>
       `;
     }
 
-    // --- BOTTOM NAVIGATION BAR (WITH CENTER + BUTTON) ---
     function renderBottomTabBar() {
       const activeClass = "text-emerald-glow font-bold";
       const inactiveClass = "text-gray-500 hover:text-gray-300";
 
       return `
         <div class="fixed bottom-0 left-0 right-0 h-16 bg-obsidian/95 border-t border-obsidian-border backdrop-blur-lg z-30 flex items-center justify-between px-4 max-w-4xl mx-auto">
-          <!-- 1. FEED & VIDEO -->
           <button onclick="switchTab('feed')" class="flex-1 h-full flex flex-col items-center justify-center space-y-1 transition ${state.activeTab === 'feed' ? activeClass : inactiveClass}">
             <i class="fa-solid fa-clapperboard text-lg"></i>
             <span class="text-[10px] font-mono">Feed</span>
           </button>
 
-          <!-- 2. SQUAD CHAT -->
           <button onclick="switchTab('chat')" class="flex-1 h-full flex flex-col items-center justify-center space-y-1 transition ${state.activeTab === 'chat' ? activeClass : inactiveClass}">
             <div class="relative">
               <i class="fa-solid fa-comments text-lg"></i>
@@ -769,14 +872,12 @@
             <span class="text-[10px] font-mono">Chat</span>
           </button>
 
-          <!-- 3. CENTER PLUS BUTTON FOR POST/VIDEO -->
           <div class="flex-1 flex justify-center items-center -mt-5">
-            <button onclick="toggleCreatePostModal(true)" class="w-13 h-13 rounded-full bg-emerald-glow text-obsidian-deep flex items-center justify-center text-xl shadow-glow-md hover:scale-105 active:scale-95 transition border-2 border-obsidian">
+            <button onclick="toggleCreatePostModal(true)" class="w-13 h-13 rounded-full bg-emerald-glow text-obsidian-deep flex items-center justify-center text-xl shadow-glow-md hover:scale-105 transition border-2 border-obsidian">
               <i class="fa-solid fa-plus text-2xl"></i>
             </button>
           </div>
 
-          <!-- 4. PROFILE & ADMIN -->
           <button onclick="switchTab('profile')" class="flex-1 h-full flex flex-col items-center justify-center space-y-1 transition ${state.activeTab === 'profile' ? activeClass : inactiveClass}">
             <i class="fa-solid fa-user-gear text-lg"></i>
             <span class="text-[10px] font-mono">Profile</span>
@@ -785,33 +886,25 @@
       `;
     }
 
-    // --- ROUTER FOR ACTIVE TAB ---
     function renderActiveTabContent() {
       switch (state.activeTab) {
-        case 'feed':
-          return renderFeedSection();
-        case 'chat':
-          return renderChatSection();
-        case 'profile':
-          return renderProfileAndAdminSection();
-        case 'dm':
-          return renderDMSection();
-        default:
-          return renderFeedSection();
+        case 'feed': return renderFeedSection();
+        case 'chat': return renderChatSection();
+        case 'profile': return renderProfileAndAdminSection();
+        case 'dm': return renderDMSection();
+        default: return renderFeedSection();
       }
     }
 
-    // --- SECTION 1: FEEDS & VIDEO ---
     function renderFeedSection() {
       return `
         <div class="max-w-2xl mx-auto space-y-6">
           <div class="space-y-5">
             ${state.posts.map(post => `
               <div class="bg-obsidian-card border border-obsidian-border rounded-2xl p-4 sm:p-5 space-y-4 shadow-md">
-                <!-- Header -->
                 <div class="flex items-center justify-between">
                   <div class="flex items-center space-x-3 cursor-pointer" onclick="openDMWith('${post.author}')">
-                    <img src="${post.avatar}" class="w-10 h-10 rounded-full border border-emerald-glow/30 bg-obsidian">
+                    <img src="${post.avatar}" class="w-10 h-10 rounded-full border border-emerald-glow/30 bg-obsidian object-cover">
                     <div>
                       <div class="flex items-center space-x-2">
                         <span class="text-sm font-bold text-white hover:text-emerald-glow transition">${post.author}</span>
@@ -827,10 +920,8 @@
                   ` : ''}
                 </div>
 
-                <!-- Text -->
                 ${post.content ? `<p class="text-xs sm:text-sm text-gray-200 leading-relaxed">${post.content}</p>` : ''}
 
-                <!-- Media Preview (Video Reel / Photo) -->
                 ${post.media ? `
                   <div class="rounded-xl overflow-hidden border border-obsidian-border bg-obsidian-deep relative group">
                     ${post.type === 'video' ? `
@@ -843,15 +934,13 @@
                             <i class="fa-solid fa-play ml-1"></i>
                           </div>
                         </div>
-                        <span class="absolute bottom-2 right-2 px-2 py-0.5 bg-black/70 text-emerald-glow text-[10px] font-mono rounded">Click for Fullscreen Reel</span>
                       </div>
                     ` : `
-                      <img src="${post.media}" class="w-full max-h-[480px] object-cover" onerror="this.style.display='none'">
+                      <img src="${post.media}" class="w-full max-h-[480px] object-cover">
                     `}
                   </div>
                 ` : ''}
 
-                <!-- Actions -->
                 <div class="flex items-center space-x-6 pt-2 border-t border-obsidian-border text-xs text-gray-400">
                   <button onclick="toggleLike(${post.id})" class="flex items-center space-x-2 ${post.likedByMe ? 'text-emerald-glow font-bold' : 'hover:text-white'}">
                     <i class="${post.likedByMe ? 'fa-solid text-emerald-glow' : 'fa-regular'} fa-heart"></i>
@@ -863,7 +952,6 @@
                   </div>
                 </div>
 
-                <!-- Comments -->
                 <div class="bg-obsidian-deep/60 rounded-xl p-3 space-y-2.5">
                   ${post.comments.map(c => `
                     <div class="text-xs space-y-0.5 border-b border-obsidian-border/40 pb-2 last:border-none last:pb-0">
@@ -890,11 +978,9 @@
       `;
     }
 
-    // --- SECTION 2: SQUAD CHAT (WITH VOICE NOTE SIMULATION) ---
     function renderChatSection() {
       return `
         <div class="h-[calc(100vh-210px)] max-w-4xl mx-auto flex flex-col rounded-2xl border border-obsidian-border bg-obsidian-card overflow-hidden shadow-xl">
-          <!-- Chat Header -->
           <div class="p-3.5 border-b border-obsidian-border bg-obsidian flex items-center justify-between">
             <div class="flex items-center space-x-2.5">
               <span class="w-2.5 h-2.5 rounded-full bg-emerald-glow animate-ping"></span>
@@ -905,13 +991,12 @@
             </div>
           </div>
 
-          <!-- Messages stream -->
           <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-3">
             ${state.messages.map(msg => {
               const isMe = msg.sender === (state.currentUser ? state.currentUser.name : '');
               return `
                 <div class="flex items-start space-x-2.5 ${isMe ? 'flex-row-reverse space-x-reverse' : ''}">
-                  <img src="${msg.avatar}" onclick="openDMWith('${msg.sender}')" class="w-7 h-7 rounded-full border border-emerald-glow/30 bg-obsidian shrink-0 cursor-pointer hover:border-emerald-glow" title="Click to DM ${msg.sender}">
+                  <img src="${msg.avatar}" onclick="openDMWith('${msg.sender}')" class="w-7 h-7 rounded-full border border-emerald-glow/30 bg-obsidian shrink-0 cursor-pointer object-cover">
                   <div class="max-w-[80%] space-y-1">
                     <div class="flex items-center space-x-2 ${isMe ? 'justify-end' : ''}">
                       <span class="text-[11px] font-semibold text-gray-300 cursor-pointer hover:text-emerald-glow" onclick="openDMWith('${msg.sender}')">${msg.sender}</span>
@@ -930,14 +1015,13 @@
             }).join('')}
           </div>
 
-          <!-- Chat Input -->
           <form onsubmit="sendChatMessage(event)" class="p-3 border-t border-obsidian-border bg-obsidian flex items-center space-x-2">
-            <button type="button" onclick="sendVoiceNoteSimulated()" class="p-2.5 bg-obsidian-deep text-emerald-glow border border-obsidian-border rounded-xl hover:border-emerald-glow/40 text-xs" title="Send Voice Note">
+            <button type="button" onclick="sendVoiceNoteSimulated()" class="p-2.5 bg-obsidian-deep text-emerald-glow border border-obsidian-border rounded-xl hover:border-emerald-glow/40 text-xs">
               <i class="fa-solid fa-microphone"></i>
             </button>
             <input type="text" id="chat-input" placeholder="Type a message to squad..." required autocomplete="off"
               class="flex-1 bg-obsidian-deep border border-obsidian-border rounded-xl px-4 py-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
-            <button type="submit" class="px-4 py-2.5 bg-emerald-glow text-obsidian-deep font-bold text-xs rounded-xl shadow-glow-sm hover:bg-emerald-accent transition">
+            <button type="submit" class="px-4 py-2.5 bg-emerald-glow text-obsidian-deep font-bold text-xs rounded-xl transition">
               <i class="fa-solid fa-paper-plane"></i>
             </button>
           </form>
@@ -945,7 +1029,6 @@
       `;
     }
 
-    // --- SECTION 3: PRIVATE DIRECT MESSAGES (DM) ---
     function renderDMSection() {
       if (!state.activeDMUser) {
         return `<div class="text-center py-12 text-gray-500 font-mono text-xs">Select a member profile to start private chat.</div>`;
@@ -958,10 +1041,9 @@
 
       return `
         <div class="h-[calc(100vh-210px)] max-w-4xl mx-auto flex flex-col rounded-2xl border border-emerald-glow/30 bg-obsidian-card overflow-hidden shadow-glow-sm">
-          <!-- DM Header -->
           <div class="p-3.5 border-b border-obsidian-border bg-obsidian flex items-center justify-between">
             <div class="flex items-center space-x-3">
-              <img src="${target.avatar}" class="w-8 h-8 rounded-full border border-emerald-glow/40">
+              <img src="${target.avatar}" class="w-8 h-8 rounded-full border border-emerald-glow/40 object-cover">
               <div>
                 <h3 class="text-xs font-bold text-white flex items-center space-x-1.5">
                   <span>${target.name}</span>
@@ -975,7 +1057,6 @@
             </button>
           </div>
 
-          <!-- DM Message list -->
           <div id="dm-container" class="flex-1 overflow-y-auto p-4 space-y-3">
             ${conversation.map(m => {
               const isMe = m.sender === state.currentUser.name;
@@ -994,11 +1075,10 @@
             }).join('')}
           </div>
 
-          <!-- DM Input -->
           <form onsubmit="sendDMMessage(event)" class="p-3 border-t border-obsidian-border bg-obsidian flex items-center space-x-2">
             <input type="text" id="dm-input" placeholder="Message ${target.name} privately..." required autocomplete="off"
               class="flex-1 bg-obsidian-deep border border-obsidian-border rounded-xl px-4 py-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
-            <button type="submit" class="px-4 py-2.5 bg-emerald-glow text-obsidian-deep font-bold text-xs rounded-xl shadow-glow-sm hover:bg-emerald-accent transition">
+            <button type="submit" class="px-4 py-2.5 bg-emerald-glow text-obsidian-deep font-bold text-xs rounded-xl">
               <i class="fa-solid fa-paper-plane"></i>
             </button>
           </form>
@@ -1006,19 +1086,25 @@
       `;
     }
 
-    // --- SECTION 4: PROFILE & PERSONALIZATION ---
+    // --- PROFILE & ADMIN PANEL WITH CHANGE AVATAR ---
     function renderProfileAndAdminSection() {
       const u = state.currentUser;
       return `
-        <div class="max-w-2xl mx-auto space-y-6">
+        <div class="max-w-2xl mx-auto space-y-5">
           <!-- Profile Customization Card -->
-          <div class="bg-obsidian-card border border-obsidian-border rounded-2xl p-5 shadow-lg space-y-4">
-            <div class="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-5">
-              <img src="${u.avatar}" class="w-20 h-20 rounded-2xl border-2 border-emerald-glow p-1 bg-obsidian shadow-glow-sm">
-              <div class="text-center sm:text-left space-y-1 flex-1">
+          <div class="bg-obsidian-card border border-obsidian-border rounded-2xl p-4 sm:p-5 shadow-lg space-y-4">
+            <div class="flex flex-col sm:flex-row items-center space-y-3 sm:space-y-0 sm:space-x-5 text-center sm:text-left">
+              <div class="relative group cursor-pointer" onclick="triggerAvatarUpload()" title="Click to change profile picture">
+                <img src="${u.avatar}" class="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl border-2 border-emerald-glow p-1 bg-obsidian shadow-glow-sm object-cover">
+                <div class="absolute inset-0 bg-black/60 rounded-2xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-emerald-glow text-xs font-mono">
+                  Change
+                </div>
+              </div>
+              
+              <div class="space-y-1 flex-1">
                 <div class="flex items-center justify-center sm:justify-start space-x-2">
-                  <h2 class="text-lg font-bold text-white">${u.name}</h2>
-                  <span class="text-xs font-mono px-2.5 py-0.5 rounded-full ${u.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow border border-emerald-glow/40' : 'bg-gray-800 text-gray-400'}">
+                  <h2 class="text-base sm:text-lg font-bold text-white">${u.name}</h2>
+                  <span class="text-[10px] font-mono px-2 py-0.5 rounded-full ${u.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow border border-emerald-glow/40' : 'bg-gray-800 text-gray-400'}">
                     ${u.role}
                   </span>
                 </div>
@@ -1026,32 +1112,43 @@
               </div>
             </div>
 
-            <!-- Profile Bio Edit Form -->
-            <form onsubmit="saveProfileEdit(event)" class="border-t border-obsidian-border pt-4 flex space-x-2">
-              <input type="text" id="profile-bio-input" placeholder="Update your Status Bio..." value="${u.bio || ''}"
-                class="flex-1 bg-obsidian-deep border border-obsidian-border rounded-xl px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
-              <button type="submit" class="px-4 py-2 bg-emerald-glow/20 border border-emerald-glow/40 text-emerald-glow text-xs font-bold rounded-xl hover:bg-emerald-glow hover:text-obsidian-deep transition">
-                Save Bio
-              </button>
+            <!-- Profile Edit Form -->
+            <form onsubmit="saveProfileEdit(event)" class="border-t border-obsidian-border pt-4 space-y-3">
+              <div>
+                <label class="block text-[10px] font-mono text-gray-400 uppercase mb-1">Upload New Profile Picture</label>
+                <input type="file" id="profile-avatar-file" accept="image/*"
+                  class="w-full bg-obsidian-deep border border-obsidian-border rounded-xl p-1.5 text-xs text-gray-400 file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-emerald-glow file:text-obsidian-deep">
+              </div>
+
+              <div>
+                <label class="block text-[10px] font-mono text-gray-400 uppercase mb-1">Status Bio</label>
+                <div class="flex space-x-2">
+                  <input type="text" id="profile-bio-input" placeholder="Update your Status Bio..." value="${u.bio || ''}"
+                    class="flex-1 bg-obsidian-deep border border-obsidian-border rounded-xl px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
+                  <button type="submit" class="px-4 py-2 bg-emerald-glow/20 border border-emerald-glow/40 text-emerald-glow text-xs font-bold rounded-xl hover:bg-emerald-glow hover:text-obsidian-deep transition shrink-0">
+                    Save Profile
+                  </button>
+                </div>
+              </div>
             </form>
           </div>
 
           <!-- ADMIN PANEL -->
           ${u.role === 'Admin' ? `
-            <div class="bg-obsidian-card border border-emerald-glow/30 rounded-2xl p-5 space-y-4 shadow-glow-sm">
+            <div class="bg-obsidian-card border border-emerald-glow/30 rounded-2xl p-4 sm:p-5 space-y-4 shadow-glow-sm">
               <div class="flex items-center space-x-2 text-emerald-glow border-b border-obsidian-border pb-3">
-                <i class="fa-solid fa-user-shield text-lg"></i>
-                <h3 class="text-sm font-bold tracking-wide uppercase font-mono">Admin Command Center</h3>
+                <i class="fa-solid fa-user-shield text-base"></i>
+                <h3 class="text-xs sm:text-sm font-bold tracking-wide uppercase font-mono">Admin Command Center</h3>
               </div>
 
               <!-- Registered Squad Members -->
               <div class="space-y-3">
-                <h4 class="text-xs font-mono text-gray-400 uppercase">Squad Members Management</h4>
+                <h4 class="text-[10px] font-mono text-gray-400 uppercase">Squad Members Management</h4>
                 <div class="space-y-2">
                   ${state.members.map(m => `
-                    <div class="flex items-center justify-between p-3 rounded-xl bg-obsidian-deep border border-obsidian-border text-xs">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-xl bg-obsidian-deep border border-obsidian-border text-xs gap-2">
                       <div class="flex items-center space-x-3 cursor-pointer" onclick="openDMWith('${m.name}')">
-                        <img src="${m.avatar}" class="w-8 h-8 rounded-full bg-obsidian">
+                        <img src="${m.avatar}" class="w-8 h-8 rounded-full bg-obsidian object-cover">
                         <div>
                           <div class="flex items-center space-x-2">
                             <span class="font-bold text-white hover:text-emerald-glow">${m.name}</span>
@@ -1061,14 +1158,14 @@
                         </div>
                       </div>
 
-                      <div class="flex items-center space-x-2">
-                        <button onclick="toggleUserRole('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border hover:border-emerald-glow/40 text-gray-300 rounded font-mono text-[10px]">
+                      <div class="flex items-center space-x-1.5 self-end sm:self-auto">
+                        <button onclick="toggleUserRole('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border text-gray-300 rounded font-mono text-[9px]">
                           ${m.role === 'Admin' ? 'Demote' : 'Promote'}
                         </button>
-                        <button onclick="toggleUserStatus('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border hover:border-amber-500/40 text-amber-300 rounded font-mono text-[10px]">
+                        <button onclick="toggleUserStatus('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border text-amber-300 rounded font-mono text-[9px]">
                           ${m.status === 'Active' ? 'Suspend' : 'Activate'}
                         </button>
-                        <button onclick="blockUser('${m.id}')" class="px-2 py-1 bg-red-950/40 border border-red-800/40 hover:bg-red-900/40 text-red-400 rounded font-mono text-[10px]">
+                        <button onclick="blockUser('${m.id}')" class="px-2 py-1 bg-red-950/40 border border-red-800/40 text-red-400 rounded font-mono text-[9px]">
                           Block
                         </button>
                       </div>
@@ -1082,28 +1179,24 @@
       `;
     }
 
-    // --- FULL SCREEN REELS MODAL ---
     function renderFullScreenReelModal() {
       const r = state.activeReel;
       if (!r) return '';
 
       return `
         <div class="fixed inset-0 z-50 bg-black flex items-center justify-center">
-          <!-- Close Reel button -->
           <button onclick="closeReel()" class="absolute top-4 right-4 z-50 text-white text-2xl font-bold p-2 bg-black/60 rounded-full w-10 h-10 flex items-center justify-center">
             &times;
           </button>
 
-          <!-- Video Reel Player -->
           <div class="w-full max-w-sm h-full max-h-[90vh] relative bg-black flex items-center justify-center border border-obsidian-border rounded-3xl overflow-hidden shadow-2xl">
             <video controls autoplay class="w-full h-full object-cover">
               <source src="${r.media}">
             </video>
 
-            <!-- Overlay Info -->
             <div class="absolute bottom-6 left-4 right-4 space-y-2 pointer-events-none">
               <div class="flex items-center space-x-2">
-                <img src="${r.avatar}" class="w-8 h-8 rounded-full border border-emerald-glow">
+                <img src="${r.avatar}" class="w-8 h-8 rounded-full border border-emerald-glow object-cover">
                 <span class="text-xs font-bold text-white drop-shadow">${r.author}</span>
               </div>
               <p class="text-xs text-gray-200 drop-shadow">${r.content}</p>
@@ -1111,34 +1204,6 @@
           </div>
         </div>
       `;
-    }
-
-    // --- CREATE POST MODAL ---
-    function toggleCreatePostModal(show) {
-      state.showCreatePostModal = show;
-      renderApp();
-    }
-
-    function createPost(e) {
-      e.preventDefault();
-      const text = document.getElementById('modal-post-text').value.trim();
-      const fileInput = document.getElementById('modal-post-media-file');
-      const isVideo = document.getElementById('modal-post-is-video').checked;
-      const file = fileInput.files[0];
-
-      if (!text && !file) return;
-
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          saveNewPost(text, ev.target.result, isVideo ? 'video' : 'image');
-          toggleCreatePostModal(false);
-        };
-        reader.readAsDataURL(file);
-      } else {
-        saveNewPost(text, null, 'text');
-        toggleCreatePostModal(false);
-      }
     }
 
     function renderCreatePostModal() {
@@ -1180,7 +1245,7 @@
               <div>
                 <label class="block text-xs font-mono text-gray-400 mb-1">Select Media File</label>
                 <input type="file" id="modal-post-media-file" accept="image/*,video/*"
-                  class="w-full bg-obsidian-deep border border-obsidian-border rounded-xl p-2 text-xs text-gray-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-glow file:text-obsidian-deep hover:file:bg-emerald-accent">
+                  class="w-full bg-obsidian-deep border border-obsidian-border rounded-xl p-2 text-xs text-gray-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-glow file:text-obsidian-deep">
               </div>
 
               <div class="flex items-center space-x-2 pt-1">
@@ -1202,149 +1267,6 @@
       `;
     }
 
-    // --- SECTION 3: PROFILE & ADMIN PANEL ---
-    function renderProfileAndAdminSection() {
-      const u = state.currentUser;
-      return `
-        <div class="max-w-2xl mx-auto space-y-6">
-          <!-- Profile Card -->
-          <div class="bg-obsidian-card border border-obsidian-border rounded-2xl p-5 shadow-lg flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-5">
-            <img src="${u.avatar}" class="w-20 h-20 rounded-2xl border-2 border-emerald-glow p-1 bg-obsidian shadow-glow-sm">
-            <div class="text-center sm:text-left space-y-1">
-              <div class="flex items-center justify-center sm:justify-start space-x-2">
-                <h2 class="text-lg font-bold text-white">${u.name}</h2>
-                <span class="text-xs font-mono px-2.5 py-0.5 rounded-full ${u.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow border border-emerald-glow/40' : 'bg-gray-800 text-gray-400'}">
-                  ${u.role}
-                </span>
-              </div>
-              <p class="text-xs text-gray-400 font-mono">ID: ${u.id}</p>
-            </div>
-          </div>
-
-          <!-- ADMIN PANEL (Visible ONLY for Admin Role) -->
-          ${u.role === 'Admin' ? `
-            <div class="bg-obsidian-card border border-emerald-glow/30 rounded-2xl p-5 space-y-4 shadow-glow-sm">
-              <div class="flex items-center space-x-2 text-emerald-glow border-b border-obsidian-border pb-3">
-                <i class="fa-solid fa-user-shield text-lg"></i>
-                <h3 class="text-sm font-bold tracking-wide uppercase font-mono">Admin Command Center</h3>
-              </div>
-
-              <!-- Registered Squad Members -->
-              <div class="space-y-3">
-                <h4 class="text-xs font-mono text-gray-400 uppercase">Squad Members Management</h4>
-                <div class="space-y-2">
-                  ${state.members.map(m => `
-                    <div class="flex items-center justify-between p-3 rounded-xl bg-obsidian-deep border border-obsidian-border text-xs">
-                      <div class="flex items-center space-x-3">
-                        <img src="${m.avatar}" class="w-8 h-8 rounded-full bg-obsidian">
-                        <div>
-                          <div class="flex items-center space-x-2">
-                            <span class="font-bold text-white">${m.name}</span>
-                            <span class="text-[9px] font-mono px-1.5 py-0.5 rounded ${m.role === 'Admin' ? 'bg-emerald-glow/20 text-emerald-glow' : 'bg-gray-800 text-gray-400'}">${m.role}</span>
-                          </div>
-                          <span class="text-[10px] ${m.status === 'Active' ? 'text-emerald-glow' : 'text-red-400'}">${m.status}</span>
-                        </div>
-                      </div>
-
-                      <div class="flex items-center space-x-2">
-                        <button onclick="toggleUserRole('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border hover:border-emerald-glow/40 text-gray-300 rounded font-mono text-[10px]">
-                          ${m.role === 'Admin' ? 'Demote' : 'Promote'}
-                        </button>
-                        <button onclick="toggleUserStatus('${m.id}')" class="px-2 py-1 bg-obsidian border border-obsidian-border hover:border-amber-500/40 text-amber-300 rounded font-mono text-[10px]">
-                          ${m.status === 'Active' ? 'Suspend' : 'Activate'}
-                        </button>
-                        <button onclick="blockUser('${m.id}')" class="px-2 py-1 bg-red-950/40 border border-red-800/40 hover:bg-red-900/40 text-red-400 rounded font-mono text-[10px]">
-                          Block
-                        </button>
-                      </div>
-                    </div>
-                  `).join('')}
-                </div>
-              </div>
-
-              <!-- Blocked Users List -->
-              ${state.blockedList.length > 0 ? `
-                <div class="space-y-2 pt-2 border-t border-obsidian-border">
-                  <h4 class="text-xs font-mono text-red-400 uppercase">Blocked Users (${state.blockedList.length})</h4>
-                  <div class="flex flex-wrap gap-2">
-                    ${state.blockedList.map(name => `
-                      <span class="inline-flex items-center space-x-1 px-2.5 py-1 bg-red-950/30 border border-red-800/40 text-red-300 rounded-lg text-xs font-mono">
-                        <span>${name}</span>
-                        <button onclick="unblockName('${name}')" class="hover:text-white ml-1">&times;</button>
-                      </span>
-                    `).join('')}
-                  </div>
-                </div>
-              ` : ''}
-
-              <!-- System Audit Logs -->
-              <div class="space-y-2 pt-2 border-t border-obsidian-border">
-                <h4 class="text-xs font-mono text-gray-400 uppercase">Audit Tracker Logs</h4>
-                <div class="max-h-36 overflow-y-auto bg-obsidian-deep p-3 rounded-xl border border-obsidian-border font-mono text-[10px] space-y-1 text-gray-400">
-                  ${state.logs.map(l => `
-                    <div><span class="text-emerald-glow">[${l.time}]</span> ${l.text}</div>
-                  `).join('')}
-                </div>
-              </div>
-            </div>
-          ` : ''}
-        </div>
-      `;
-    }
-
-    // --- SECTION 2: CHAT ---
-    function renderChatSection() {
-      return `
-        <div class="h-[calc(100vh-210px)] max-w-4xl mx-auto flex flex-col rounded-2xl border border-obsidian-border bg-obsidian-card overflow-hidden shadow-xl">
-          <!-- Chat Header -->
-          <div class="p-3.5 border-b border-obsidian-border bg-obsidian flex items-center justify-between">
-            <div class="flex items-center space-x-2.5">
-              <span class="w-2.5 h-2.5 rounded-full bg-emerald-glow animate-ping"></span>
-              <div>
-                <h3 class="text-xs font-bold text-white"># Vintage Squad Chat</h3>
-                <p class="text-[10px] text-gray-400 font-mono">${state.members.length} registered members</p>
-              </div>
-            </div>
-          </div>
-
-          <!-- Messages stream -->
-          <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-3">
-            ${state.messages.map(msg => {
-              const isMe = msg.sender === (state.currentUser ? state.currentUser.name : '');
-              return `
-                <div class="flex items-start space-x-2.5 ${isMe ? 'flex-row-reverse space-x-reverse' : ''}">
-                  <img src="${msg.avatar}" class="w-7 h-7 rounded-full border border-emerald-glow/30 bg-obsidian shrink-0">
-                  <div class="max-w-[80%] space-y-1">
-                    <div class="flex items-center space-x-2 ${isMe ? 'justify-end' : ''}">
-                      <span class="text-[11px] font-semibold text-gray-300">${msg.sender}</span>
-                      <span class="text-[9px] text-gray-500 font-mono">${msg.timestamp}</span>
-                    </div>
-                    <div class="p-3 rounded-2xl text-xs leading-relaxed ${
-                      isMe 
-                        ? 'bg-emerald-dark/50 border border-emerald-glow/30 text-white rounded-tr-none' 
-                        : 'bg-obsidian-deep border border-obsidian-border text-gray-200 rounded-tl-none'
-                    }">
-                      ${msg.text}
-                    </div>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-
-          <!-- Chat Input -->
-          <form onsubmit="sendChatMessage(event)" class="p-3 border-t border-obsidian-border bg-obsidian flex items-center space-x-2">
-            <input type="text" id="chat-input" placeholder="Type a message to squad..." required autocomplete="off"
-              class="flex-1 bg-obsidian-deep border border-obsidian-border rounded-xl px-4 py-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-glow">
-            <button type="submit" class="px-4 py-2.5 bg-emerald-glow text-obsidian-deep font-bold text-xs rounded-xl shadow-glow-sm hover:bg-emerald-accent transition">
-              <i class="fa-solid fa-paper-plane"></i>
-            </button>
-          </form>
-        </div>
-      `;
-    }
-
-    // --- STORY VIEWER MODAL ---
     function renderStoryModal() {
       const s = state.activeStoryModal;
       if (!s) return '';
@@ -1353,7 +1275,7 @@
           <div class="w-full max-w-sm bg-obsidian-card border border-emerald-glow/40 rounded-3xl overflow-hidden shadow-glow-lg flex flex-col relative">
             <div class="p-3 flex items-center justify-between border-b border-obsidian-border bg-obsidian/80">
               <div class="flex items-center space-x-2.5">
-                <img src="${s.avatar}" class="w-7 h-7 rounded-full border border-emerald-glow/40">
+                <img src="${s.avatar}" class="w-7 h-7 rounded-full border border-emerald-glow/40 object-cover">
                 <span class="text-xs font-bold text-white">${s.author}</span>
               </div>
               <button onclick="closeStory()" class="text-gray-400 hover:text-white px-2 text-lg font-bold">
@@ -1369,7 +1291,7 @@
       `;
     }
 
-    // --- INITIAL APP LAUNCH ---
+    // --- INITIAL LAUNCH ---
     window.onload = function() {
       renderApp();
     };
