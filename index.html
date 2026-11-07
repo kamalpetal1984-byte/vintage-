@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VINTAGE - Squad Network</title>
+  <title>VINTAGE</title>
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- FontAwesome Icons -->
@@ -37,6 +37,17 @@
     window.vintageDB = db;
     window.vintageAppId = appId;
     window.firebaseFS = { collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, getDocs };
+
+    // Setup Cross-Window & Cross-Device Sync Channel
+    window.vintageChannel = new BroadcastChannel('vintage_realtime_sync');
+    window.vintageChannel.onmessage = (event) => {
+      if (event.data && event.data.type === 'DATA_UPDATED') {
+        state.posts = getStored('posts', state.posts);
+        state.messages = getStored('messages', state.messages);
+        state.members = getStored('members', state.members);
+        if (state.currentUser) renderApp();
+      }
+    };
 
     // Authenticate anonymously for secure Cloud Firestore Sync
     signInAnonymously(auth).then(() => {
@@ -231,13 +242,36 @@
     };
 
     function syncToCloud(collectionName, docId, data) {
+      // Direct Local Broadcast to all active windows/tabs instantly
+      if (window.vintageChannel) {
+        window.vintageChannel.postMessage({ type: 'DATA_UPDATED' });
+      }
+
       if (!window.vintageDB || !window.firebaseFS) return;
       try {
         const { doc, setDoc } = window.firebaseFS;
         const docRef = doc(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', collectionName, String(docId));
-        setDoc(docRef, data, { merge: true });
+        setDoc(docRef, data, { merge: true }).then(() => {
+          console.log("Cloud sync successful for", collectionName);
+        }).catch(err => console.warn("Firestore Write Error:", err));
       } catch(e) {
         console.warn("Cloud write error:", e);
+      }
+    }
+
+    function saveState() {
+      setStored('currentUser', state.currentUser);
+      setStored('stories', state.stories);
+      setStored('posts', state.posts);
+      setStored('messages', state.messages);
+      setStored('members', state.members);
+      setStored('blockedList', state.blockedList);
+      setStored('logs', state.logs);
+      setStored('notifications', state.notifications);
+      setStored('directMessages', state.directMessages);
+
+      if (window.vintageChannel) {
+        window.vintageChannel.postMessage({ type: 'DATA_UPDATED' });
       }
     }
 
