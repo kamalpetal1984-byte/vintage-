@@ -11,6 +11,40 @@
   <!-- Google Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   
+  <!-- Firebase SDK Modules for Realtime Database & Auth -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // Firebase Config Initialization
+    const firebaseConfig = typeof __firebase_config !== 'undefined' 
+      ? JSON.parse(__firebase_config) 
+      : {
+          apiKey: "demo-key",
+          authDomain: "vintage-app.firebaseapp.com",
+          projectId: "vintage-app",
+          storageBucket: "vintage-app.appspot.com",
+          messagingSenderId: "123456789",
+          appId: typeof __app_id !== 'undefined' ? __app_id : 'vintage-squad-app'
+        };
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'vintage-squad-app';
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    window.vintageDB = db;
+    window.vintageAppId = appId;
+
+    // Authenticate anonymously for secure Cloud Firestore Sync
+    signInAnonymously(auth).then(() => {
+      window.setupRealtimeListeners();
+    }).catch(err => {
+      console.warn("Using offline memory mode fallback", err);
+    });
+  </script>
+
   <script>
     tailwind.config = {
       theme: {
@@ -105,20 +139,16 @@
       activeDMUser: null, // target user object for 1-on-1 DM
       showNotificationsModal: false, // Full screen notifications modal for mobile clarity
 
-      // Notifications stored in localStorage
       notifications: getStored('notifications', [
         { id: 1, text: "Welcome to Vintage Squad Network!", time: "Just now", read: false }
       ]),
 
-      // Direct Messages stored in localStorage
       directMessages: getStored('directMessages', []),
       
-      // Dynamic Stories stored in localStorage
       stories: getStored('stories', [
         { id: 1, author: "Shreyansh", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Shreyansh", image: "https://images.unsplash.com/photo-1518770660439-4636190af475?q=80&w=800&auto=format&fit=crop", caption: "Vintage core system operational 🚀" }
       ]),
 
-      // Dynamic Posts stored in localStorage
       posts: getStored('posts', [
         {
           id: 1,
@@ -135,12 +165,10 @@
         }
       ]),
 
-      // Dynamic Messages stored in localStorage
       messages: getStored('messages', [
         { id: 1, sender: "Shreyansh", role: "Admin", text: "Welcome to the Vintage squad room!", timestamp: "12:00 PM", avatar: "https://api.dicebear.com/7.x/bottts/svg?seed=Shreyansh" }
       ]),
 
-      // Dynamic Group Members
       members: getStored('members', [
         { id: 'm_admin', name: 'Shreyansh', role: 'Admin', status: 'Active', joined: 'Owner', avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Shreyansh' }
       ]),
@@ -150,6 +178,50 @@
         { id: 1, text: "System initialized with Obsidian-Emerald Core v3.0", time: "10:00 AM" }
       ])
     };
+
+    // Realtime Cloud Synchronization listeners across all devices
+    window.setupRealtimeListeners = function() {
+      if (!window.vintageDB) return;
+      const { collection, onSnapshot } = window.firebaseFirestore || {};
+      
+      try {
+        // Listen to cloud posts
+        const postsRef = window.firebaseFirestore.collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'posts');
+        window.firebaseFirestore.onSnapshot(postsRef, (snapshot) => {
+          const cloudPosts = [];
+          snapshot.forEach(doc => cloudPosts.push(doc.data()));
+          if (cloudPosts.length > 0) {
+            cloudPosts.sort((a,b) => (b.id || 0) - (a.id || 0));
+            state.posts = cloudPosts;
+            setStored('posts', state.posts);
+            if (state.currentUser) renderApp();
+          }
+        }, (err) => console.log("Cloud sync fallback active"));
+
+        // Listen to cloud squad chat messages
+        const chatRef = window.firebaseFirestore.collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'messages');
+        window.firebaseFirestore.onSnapshot(chatRef, (snapshot) => {
+          const cloudMsgs = [];
+          snapshot.forEach(doc => cloudMsgs.push(doc.data()));
+          if (cloudMsgs.length > 0) {
+            cloudMsgs.sort((a,b) => (a.id || 0) - (b.id || 0));
+            state.messages = cloudMsgs;
+            setStored('messages', state.messages);
+            if (state.currentUser) renderApp();
+          }
+        }, (err) => console.log("Cloud chat sync fallback active"));
+      } catch(e) {
+        console.log("Local Storage Mode");
+      }
+    };
+
+    function syncToCloud(collectionName, docId, data) {
+      if (!window.vintageDB || !window.firebaseFirestore) return;
+      try {
+        const docRef = window.firebaseFirestore.doc(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', collectionName, String(docId));
+        window.firebaseFirestore.setDoc(docRef, data, { merge: true });
+      } catch(e) {}
+    }
 
     function saveState() {
       setStored('currentUser', state.currentUser);
@@ -505,6 +577,7 @@
       state.posts.unshift(newPost);
       state.showCreatePostModal = false;
       saveState();
+      syncToCloud('posts', newPost.id, newPost);
       addLog(`New ${postType} created by ${state.currentUser.name}`);
       renderApp();
     }
@@ -587,6 +660,7 @@
 
       state.messages.push(newMsg);
       saveState();
+      syncToCloud('messages', newMsg.id, newMsg);
       renderApp();
       setTimeout(() => {
         const chatBox = document.getElementById('chat-container');
