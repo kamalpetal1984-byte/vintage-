@@ -14,7 +14,7 @@
   <!-- Firebase SDK Modules for Realtime Database & Auth -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { getFirestore, collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     // Firebase Config Initialization
@@ -36,10 +36,13 @@
 
     window.vintageDB = db;
     window.vintageAppId = appId;
+    window.firebaseFS = { collection, doc, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, getDocs };
 
     // Authenticate anonymously for secure Cloud Firestore Sync
     signInAnonymously(auth).then(() => {
-      window.setupRealtimeListeners();
+      if (window.setupRealtimeListeners) {
+        window.setupRealtimeListeners();
+      }
     }).catch(err => {
       console.warn("Using offline memory mode fallback", err);
     });
@@ -181,46 +184,61 @@
 
     // Realtime Cloud Synchronization listeners across all devices
     window.setupRealtimeListeners = function() {
-      if (!window.vintageDB) return;
-      const { collection, onSnapshot } = window.firebaseFirestore || {};
+      if (!window.vintageDB || !window.firebaseFS) return;
+      const { collection, onSnapshot } = window.firebaseFS;
       
       try {
-        // Listen to cloud posts
-        const postsRef = window.firebaseFirestore.collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'posts');
-        window.firebaseFirestore.onSnapshot(postsRef, (snapshot) => {
+        // Listen to cloud posts in Realtime
+        const postsRef = collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'posts');
+        onSnapshot(postsRef, (snapshot) => {
           const cloudPosts = [];
-          snapshot.forEach(doc => cloudPosts.push(doc.data()));
+          snapshot.forEach(docSnap => cloudPosts.push(docSnap.data()));
           if (cloudPosts.length > 0) {
             cloudPosts.sort((a,b) => (b.id || 0) - (a.id || 0));
             state.posts = cloudPosts;
             setStored('posts', state.posts);
             if (state.currentUser) renderApp();
           }
-        }, (err) => console.log("Cloud sync fallback active"));
+        }, (err) => console.log("Cloud sync listener error:", err));
 
-        // Listen to cloud squad chat messages
-        const chatRef = window.firebaseFirestore.collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'messages');
-        window.firebaseFirestore.onSnapshot(chatRef, (snapshot) => {
+        // Listen to cloud squad chat messages in Realtime
+        const chatRef = collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'messages');
+        onSnapshot(chatRef, (snapshot) => {
           const cloudMsgs = [];
-          snapshot.forEach(doc => cloudMsgs.push(doc.data()));
+          snapshot.forEach(docSnap => cloudMsgs.push(docSnap.data()));
           if (cloudMsgs.length > 0) {
             cloudMsgs.sort((a,b) => (a.id || 0) - (b.id || 0));
             state.messages = cloudMsgs;
             setStored('messages', state.messages);
             if (state.currentUser) renderApp();
           }
-        }, (err) => console.log("Cloud chat sync fallback active"));
+        }, (err) => console.log("Cloud chat listener error:", err));
+
+        // Listen to registered members list in Realtime
+        const membersRef = collection(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', 'members');
+        onSnapshot(membersRef, (snapshot) => {
+          const cloudMembers = [];
+          snapshot.forEach(docSnap => cloudMembers.push(docSnap.data()));
+          if (cloudMembers.length > 0) {
+            state.members = cloudMembers;
+            setStored('members', state.members);
+            if (state.currentUser) renderApp();
+          }
+        }, (err) => console.log("Members sync listener error:", err));
       } catch(e) {
-        console.log("Local Storage Mode");
+        console.log("Local Storage Fallback Mode", e);
       }
     };
 
     function syncToCloud(collectionName, docId, data) {
-      if (!window.vintageDB || !window.firebaseFirestore) return;
+      if (!window.vintageDB || !window.firebaseFS) return;
       try {
-        const docRef = window.firebaseFirestore.doc(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', collectionName, String(docId));
-        window.firebaseFirestore.setDoc(docRef, data, { merge: true });
-      } catch(e) {}
+        const { doc, setDoc } = window.firebaseFS;
+        const docRef = doc(window.vintageDB, 'artifacts', window.vintageAppId, 'public', 'data', collectionName, String(docId));
+        setDoc(docRef, data, { merge: true });
+      } catch(e) {
+        console.warn("Cloud write error:", e);
+      }
     }
 
     function saveState() {
@@ -298,6 +316,15 @@
 
       saveState();
       addLog(`User '${nameInput}' authenticated as [${finalRole}].`);
+      syncToCloud('members', state.currentUser.id, {
+        id: state.currentUser.id,
+        name: nameInput,
+        role: finalRole,
+        status: 'Active',
+        joined: 'Today',
+        avatar: userAvatar,
+        bio: state.currentUser.bio
+      });
       renderApp();
     }
 
@@ -610,6 +637,27 @@
         post.likedByMe = !post.likedByMe;
         post.likes += post.likedByMe ? 1 : -1;
         saveState();
+        syncToCloud('posts', post.id, post);
+        renderApp();
+      }
+    }
+
+    function addComment(e, postId) {
+      e.preventDefault();
+      const input = document.getElementById(`comment-input-${postId}`);
+      const text = input.value.trim();
+      if (!text) return;
+
+      const post = state.posts.find(p => p.id === postId);
+      if (post) {
+        post.comments.push({
+          id: Date.now(),
+          author: state.currentUser.name,
+          text: text,
+          timestamp: "Just now"
+        });
+        saveState();
+        syncToCloud('posts', post.id, post);
         renderApp();
       }
     }
